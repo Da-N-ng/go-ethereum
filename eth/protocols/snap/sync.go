@@ -230,9 +230,8 @@ type trienodeHealRequest struct {
 	timeout *time.Timer                // Timer to track delivery timeout
 	stale   chan struct{}              // Channel to signal the request was dropped
 
-	paths     []string        // Trie node paths for identifying trie node
-	hashes    []common.Hash   // Trie node hashes to validate responses
-	syncPaths []trie.SyncPath // Trie node sync paths requested for rescheduling
+	paths  []string      // Trie node paths for identifying trie node
+	hashes []common.Hash // Trie node hashes to validate responses
 
 	task *healTask // Task which this request is filling (only access fields through the runloop!!)
 }
@@ -1323,35 +1322,32 @@ func (s *Syncer) assignTrienodeHealTasks(success chan *trienodeHealResponse, fai
 			cap = maxTrieRequestCount
 		}
 		var (
-			hashes    = make([]common.Hash, 0, cap)
-			paths     = make([]string, 0, cap)
-			syncPaths = make([]trie.SyncPath, 0, cap)
-			pathsets  = make([]TrieNodePathSet, 0, cap)
+			hashes   = make([]common.Hash, 0, cap)
+			paths    = make([]string, 0, cap)
+			pathsets = make([]TrieNodePathSet, 0, cap)
 		)
 		for path, hash := range s.healer.trieTasks {
 			delete(s.healer.trieTasks, path)
 
 			paths = append(paths, path)
 			hashes = append(hashes, hash)
-			syncPaths = append(syncPaths, trie.NewSyncPath([]byte(path)))
 			if len(paths) >= cap {
 				break
 			}
 		}
 		// Group requests by account hash
-		paths, hashes, syncPaths, pathsets = sortByAccountPath(paths, hashes, syncPaths)
+		paths, hashes, _, pathsets = sortByAccountPath(paths, hashes)
 		req := &trienodeHealRequest{
-			peer:      idle,
-			id:        reqid,
-			time:      time.Now(),
-			deliver:   success,
-			revert:    fail,
-			cancel:    cancel,
-			stale:     make(chan struct{}),
-			paths:     paths,
-			hashes:    hashes,
-			syncPaths: syncPaths,
-			task:      s.healer,
+			peer:    idle,
+			id:      reqid,
+			time:    time.Now(),
+			deliver: success,
+			revert:  fail,
+			cancel:  cancel,
+			stale:   make(chan struct{}),
+			paths:   paths,
+			hashes:  hashes,
+			task:    s.healer,
 		}
 		req.timeout = time.AfterFunc(s.rates.TargetTimeout(), func() {
 			peer.Log().Debug("Trienode heal request timed out", "reqid", reqid)
@@ -2981,7 +2977,11 @@ func (t *healRequestSort) Merge() []TrieNodePathSet {
 
 // sortByAccountPath takes hashes and paths, and sorts them. After that, it generates
 // the TrieNodePaths and merges paths which belongs to the same account path.
-func sortByAccountPath(paths []string, hashes []common.Hash, syncPaths []trie.SyncPath) ([]string, []common.Hash, []trie.SyncPath, []TrieNodePathSet) {
+func sortByAccountPath(paths []string, hashes []common.Hash) ([]string, []common.Hash, []trie.SyncPath, []TrieNodePathSet) {
+	var syncPaths []trie.SyncPath
+	for _, path := range paths {
+		syncPaths = append(syncPaths, trie.NewSyncPath([]byte(path)))
+	}
 	n := &healRequestSort{paths, hashes, syncPaths}
 	sort.Sort(n)
 	pathsets := n.Merge()
