@@ -263,8 +263,8 @@ type stateSync struct {
 	sched  *trie.Sync         // State trie sync scheduler defining the tasks
 	keccak crypto.KeccakState // Keccak256 hasher to verify deliveries with
 
-	trieTasks map[string]*trieTask      // Set of trie node tasks currently queued for retrieval
-	codeTasks map[common.Hash]*codeTask // Set of byte code tasks currently queued for retrieval
+	trieTasks map[string]*trieTask      // Set of trie node tasks currently queued for retrieval, indexed by path
+	codeTasks map[common.Hash]*codeTask // Set of byte code tasks currently queued for retrieval, indexed by hash
 
 	numUncommitted   int
 	bytesUncommitted int
@@ -456,11 +456,11 @@ func (s *stateSync) assignTasks() {
 func (s *stateSync) fillTasks(n int, req *stateReq) (nodes []common.Hash, paths []trie.SyncPath, codes []common.Hash) {
 	// Refill available tasks from the scheduler.
 	if fill := n - (len(s.trieTasks) + len(s.codeTasks)); fill > 0 {
-		keys, hashes, paths, codes := s.sched.Missing(fill)
-		for i, key := range keys {
-			s.trieTasks[key] = &trieTask{
+		paths, hashes, codes := s.sched.Missing(fill)
+		for i, path := range paths {
+			s.trieTasks[path] = &trieTask{
 				hash:     hashes[i],
-				path:     paths[i],
+				path:     trie.NewSyncPath([]byte(path)),
 				attempts: make(map[string]struct{}),
 			}
 		}
@@ -494,7 +494,7 @@ func (s *stateSync) fillTasks(n int, req *stateReq) (nodes []common.Hash, paths 
 		req.codeTasks[hash] = t
 		delete(s.codeTasks, hash)
 	}
-	for key, t := range s.trieTasks {
+	for path, t := range s.trieTasks {
 		// Stop when we've gathered enough requests
 		if len(nodes)+len(codes) == n {
 			break
@@ -509,8 +509,8 @@ func (s *stateSync) fillTasks(n int, req *stateReq) (nodes []common.Hash, paths 
 		nodes = append(nodes, t.hash)
 		paths = append(paths, t.path)
 
-		req.trieTasks[key] = t
-		delete(s.trieTasks, key)
+		req.trieTasks[path] = t
+		delete(s.trieTasks, path)
 	}
 	req.nItems = uint16(len(nodes) + len(codes))
 	return nodes, paths, codes
@@ -548,7 +548,7 @@ func (s *stateSync) process(req *stateReq) (int, error) {
 	}
 	// Put unfulfilled tasks back into the retry queue
 	npeers := s.d.peers.Len()
-	for key, task := range req.trieTasks {
+	for path, task := range req.trieTasks {
 		// If the node did deliver something, missing items may be due to a protocol
 		// limit or a previous timeout + delayed delivery. Both cases should permit
 		// the node to retry the missing items (to avoid single-peer stalls).
@@ -561,7 +561,7 @@ func (s *stateSync) process(req *stateReq) (int, error) {
 			return successful, fmt.Errorf("trie node %s failed with all peers (%d tries, %d peers)", task.hash.TerminalString(), len(task.attempts), npeers)
 		}
 		// Missing item, place into the retry queue.
-		s.trieTasks[key] = task
+		s.trieTasks[path] = task
 	}
 	for hash, task := range req.codeTasks {
 		// If the node did deliver something, missing items may be due to a protocol
@@ -602,13 +602,13 @@ func (s *stateSync) processNodeData(nodeTasks map[string]*trieTask, codeTasks ma
 		delete(codeTasks, hash)
 		return hash, err
 	}
-	for key, task := range nodeTasks {
+	for path, task := range nodeTasks {
 		if task.hash == hash {
 			err := s.sched.ProcessNode(trie.NodeSyncResult{
-				Key:  key,
+				Path: path,
 				Data: blob,
 			})
-			delete(nodeTasks, key)
+			delete(nodeTasks, path)
 			return hash, err
 		}
 	}
